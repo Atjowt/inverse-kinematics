@@ -3,16 +3,10 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
-#include <cglm/affine-pre.h>
-#include <cglm/affine.h>
-#include <cglm/affine-post.h>
-#include <cglm/cam.h>
-#include <cglm/mat4.h>
-#include <cglm/types.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-#define ARM_LENGTH 3
+#define ARM_LENGTH 4
 
 typedef struct {
     vec2 position;
@@ -27,12 +21,12 @@ void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos);
 void window_point_to_device_point(GLFWwindow* window, double x, double y, double* out_x, double* out_y);
 void init_arm(Segment arm[ARM_LENGTH]);
 void inverse_kinematics(Segment* segments, int n, vec2 target);
+void update_segment_positions(Segment* segments, int n);
 
 int render_width, render_height;
 double mouse_x, mouse_y;
 
 int main(void) {
-
     const int init_window_width = 800;
     const int init_window_height = 500;
     const int n_x_MSAA = 4; // Anti-aliasing
@@ -68,14 +62,12 @@ int main(void) {
     }
 
     glfwSwapInterval(1);
- 
     framebuffer_size_callback(window, init_window_width, init_window_height);
 
     Segment arm[ARM_LENGTH];
     init_arm(arm);
 
     while (!glfwWindowShouldClose(window)) {
-
         double target_x, target_y;
         window_point_to_device_point(window, mouse_x, mouse_y, &target_x, &target_y);
         vec2 target = { target_x, target_y };
@@ -90,30 +82,19 @@ int main(void) {
 
         glBegin(GL_LINES);
         glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-        for (int i = 0; i < ARM_LENGTH; i++) {
-
-            Segment a = arm[i];
-            float a_x = a.position[0];
-            float a_y = a.position[1];
-
-            int j = (i + 1) % ARM_LENGTH;
-            Segment b = arm[j];
-            float b_x = b.position[0];
-            float b_y = b.position[1];
-
-            glVertex2f(a_x, a_y);
-            glVertex2f(b_x, b_y);
+        for (int i = 0; i < ARM_LENGTH - 1; i++) {
+            glVertex2f(arm[i].position[0], arm[i].position[1]);
+            glVertex2f(arm[i + 1].position[0], arm[i + 1].position[1]);
         }
         glEnd();
 
         glDisable(GL_LINE_SMOOTH);
- 
+
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
- 
+
     glfwDestroyWindow(window);
- 
     glfwTerminate();
     exit(EXIT_SUCCESS);
 
@@ -121,10 +102,9 @@ int main(void) {
 }
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    render_width = width, render_height = height;
+    render_width = width;
+    render_height = height;
     printf("Resized to [%d x %d]\n", width, height);
-    // const double ratio = width / (double)height;
-    // glOrtho(-ratio, ratio, -1.0, 1.0, 1.0, -1.0);
     glViewport(0, 0, width, height);
 }
 
@@ -151,22 +131,22 @@ void window_point_to_device_point(GLFWwindow* window, double x, double y, double
 }
 
 void init_arm(Segment arm[ARM_LENGTH]) {
+    static const float segment_length = 0.25f;
     for (int i = 0; i < ARM_LENGTH; i++) {
-        arm[i].length = 0.1f;
+        arm[i].length = segment_length;
         arm[i].angle = 0.0f;
-        arm[i].position[0] = 0.0f;
+        arm[i].position[0] = (i == 0) ? 0.0f : arm[i - 1].position[0] + arm[i - 1].length;
         arm[i].position[1] = 0.0f;
     }
 }
 
 void inverse_kinematics(Segment* segments, int n, vec2 target) {
 
-    static const int max_iterations = 16;
-    static const float target_threshold = 0.001f;
+    static const int max_iterations = 12;
+    static const float target_threshold = 0.01f;
 
     for (int iteration = 0; iteration < max_iterations; ++iteration) {
         for (int i = n - 1; i >= 0; --i) {
-
             // Compute the vector from the current joint to the end effector and to the target
             vec2 to_end_effector;
             glm_vec2_sub(segments[n - 1].position, segments[i].position, to_end_effector);
@@ -183,23 +163,26 @@ void inverse_kinematics(Segment* segments, int n, vec2 target) {
             // Rotate the segment
             segments[i].angle += rotation;
 
-            // Update the position of the segment and all subsequent segments
-            for (int j = i; j < n; ++j) {
-                if (j == 0) {
-                    glm_vec2_zero(segments[j].position);
-                } else {
-                    vec2 v = {
-                        cosf(segments[j - 1].angle) * segments[j - 1].length,
-                        sinf(segments[j - 1].angle) * segments[j - 1].length,
-                    };
-                    glm_vec2_rotate(v, segments[j - 1].angle, v);
-                    glm_vec2_add(v, segments[j - 1].position, segments[j].position);
-                }
-            }
+            // Update the positions of all segments
+            update_segment_positions(segments, n);
 
             if (glm_vec2_distance(segments[n - 1].position, target) < target_threshold) {
                 return;
             }
+        }
+    }
+}
+
+void update_segment_positions(Segment* segments, int n) {
+    for (int i = 0; i < n; ++i) {
+        if (i == 0) {
+            glm_vec2_zero(segments[i].position);
+        } else {
+            vec2 v = {
+                cosf(segments[i - 1].angle) * segments[i - 1].length,
+                sinf(segments[i - 1].angle) * segments[i - 1].length,
+            };
+            glm_vec2_add(segments[i - 1].position, v, segments[i].position);
         }
     }
 }
